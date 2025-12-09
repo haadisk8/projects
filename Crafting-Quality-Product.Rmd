@@ -1,0 +1,735 @@
+---
+title: "Crafting Quality Products"
+author: "Saffan"
+output: 
+  flexdashboard::flex_dashboard:
+    theme:
+      version: 4
+      bootswatch: default
+      navbar-bg: "#173767"
+    orientation: columns
+    vertical_layout: fill
+    source_code: embed
+---
+
+
+```{r}
+pacman::p_load(ccorrplot, caret, DT, flexdashboard, GGally, janitor, knitr, nnet, plotly, pROC, pscl, tidyverse)
+
+#Read and prepare project data
+df <- read.csv(
+  "Project data set.csv",
+  sep = ";",
+  header = TRUE,
+  check.names = FALSE
+  ) |>
+  janitor::clean_names() |>
+  dplyr::rename(
+    melt_temp = melt_temperature,
+    mold_temp = mold_temperature,
+    fill_time = time_to_fill,
+    plast_time = z_dx_plasticizing_time,
+    cycle_time = z_ux_cycle_time,
+    close_force = s_kx_closing_force,
+    clamp_peak = s_ks_clamping_force_peak_value,
+    torque_peak = ms_torque_peak_value_current_cycle,
+    torque_mean = mm_torque_mean_value_current_cycle,
+    back_press = ap_ss_specific_back_pressure_peak_value,
+    inj_press = ap_vs_specific_injection_pressure_peak_value,
+    screw_pos = c_pn_screw_position_at_the_end_of_hold_pressure,
+    shot_vol = s_vo_shot_volume
+  )
+
+#Outcome: 4-level quality + binary Good (2&3) vs Bad (1&4)
+df$quality <- factor(df$quality)
+
+#Numeric predictors: short names
+num_vars <- c(
+"melt_temp","mold_temp","fill_time","plast_time","cycle_time",
+"close_force","clamp_peak","torque_peak","torque_mean",
+"back_press","inj_press","screw_pos","shot_vol"
+)
+
+```
+
+<head>
+    <base target="_blank">
+</head>
+
+Introduction
+=======================================================================
+
+Column {data-width=400}
+-----------------------------------------------------------------------
+
+### Motivation
+
+**Crafting Quality Product: Modeling Injection Molding Outcomes with Multinomial Logistic Analysis**
+
+This project investigates how injection molding process factors affect the quality of plastic road lenses in a dataset with 1451 samples, 13 process variables, and a quality label, guided by the idea that “quality is when the customer comes back, not the product.” Quality is divided into four classes based on general uniformity \(U_0\). Class 3 (“Target”) is the best outcome, with \(0.45 \le U_0 \le 0.5\), and Class 2 (“Acceptable”) meets the minimum standard with \(0.4 \le U_0 < 0.45\). Class 1 (“Waste”) has \(U_0 < 0.4\) and represents defective lenses, while Class 4 (“Inefficient”) has \(U_0 > 0.5\) and produces more uniformity than required, using extra resources without added benefit. For the purposes of modeling, Classes 1 and 4 are combined into a single “bad” category, and Classes 2 and 3 are treated as satisfactory “good” quality.
+
+
+### Research Questions 
+
+- Which injection molding variables differ most across the four quality classes (Waste, Acceptable, Target, Inefficient) ?
+
+- How do key process conditions differ between “Good” lenses (quality levels 2 and 3) and “Bad” lenses (levels 1 and 4) ?
+
+- How do a full multinomial logistic regression model and a reduced model (with only significant predictors) differ in their ability to classify lenses into the four quality classes?
+
+
+Column {.tabset data-width=400}
+-----------------------------------------------------------------------
+
+### Dataset overview
+
+```{r}
+datatable(
+  df,
+  options = list(pageLength = 25, scrollX = TRUE),
+  caption = "All 1451 samples of the injection molding dataset"
+)
+```
+
+EDA
+=======================================================================
+
+Column {.tabset data-width=500}
+-----------------------------------------------------------------------
+
+### Distribution
+
+
+```{r}
+p1 <- ggplot(df, aes(x = quality)) +
+  geom_bar(fill = "steelblue") +
+  labs(
+    title = "Quality Classes for Road Lenses",
+    x = "Quality Class",
+    y = "Number of Observations"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(size = 10, hjust = 0.5),
+    axis.title = element_text(size = 8),
+    axis.text = element_text(size = 7)
+  )
+ggplotly(p1)
+```
+
+
+### Correlation
+
+```{r}
+
+library(GGally)
+
+df |>
+  select(all_of(num_vars)) |>
+  cor(use = "pairwise.complete.obs") |>
+  corrplot::corrplot(method = "color", tl.cex = 0.6, tl.col = "black")
+
+```
+
+### Boxplots
+
+```{r, fig.align='center', out.height="100%"}
+df |>
+  select(quality, all_of(num_vars)) |>
+  pivot_longer(
+    cols = -quality,
+    names_to = "Variable",
+    values_to = "Value"
+  ) |>
+  mutate(
+    # nicer labels for y-axis 
+    quality = factor(
+      quality,
+      levels = c(1, 2, 3, 4),
+      labels = c("Waste", "Acceptable", "Target", "Inefficient")
+    )
+  ) |>
+  ggplot(aes(x = Value, y = quality)) +        # <- flipped
+  geom_boxplot(
+    fill = "#4F81BD",
+    color = "black",
+    outlier.color = "black",
+    outlier.size = 0.7
+  ) +
+  facet_wrap(
+    ~ Variable,
+    scales = "free_x",                         # free only on x
+    ncol = 3                                   
+  ) +
+  labs(
+    title = "Process Variables Across Four Quality Classes",
+    x = "Process value",
+    y = "Quality class"
+  ) +
+  theme_minimal(base_size = 10) +
+  theme(
+    plot.title  = element_text(hjust = 0.5, face = "bold"),
+    strip.text  = element_text(size = 10, face = "bold"),
+    panel.border = element_rect(colour = "grey80", fill = NA),  # card-like border
+    axis.text.y = element_text(size = 8)
+  )
+
+```
+
+### Summary
+
+```{r Summary Statistics}
+# 1. Get summary as a matrix
+s <- summary(df[num_vars])
+
+kable(s[, 1:4])
+
+kable(s[, 5:8])
+
+kable(s[, 9:12])
+
+kable(s[, 13], col.names = "shot_vol")
+```
+
+
+Column {data-width=500}
+-----------------------------------------------------------------------
+
+### Analysis{data-height=800}
+
+
+The Quality classes 1–4 define an ordinal scale in $U_0$, but Class 3 represents the true optimum. Process improvements should aim to keep production centered in Class 3 while avoiding both defective Class 1 parts and inefficient Class 4 parts.
+
+The box plots shows the relation between process stability and the four ordered quality classes for road lenses. Class 4 (“Inefficient,” highest $U_0$) shows elevated medians and wide spreads in fill time, torque, screw position, and shot volume, indicating unstable filling and material metering as well as inefficient use of material and cycle time. 
+
+In contrast, higher performing classes, especially Classes 1 and 2, exhibit tighter distributions in clamp force and injection pressure, suggesting more consistent operation and better control of cavity packing.
+Relating these patterns to the class definitions clarifies the quality scale. 
+
+Class 1 (“Waste,” $U_0 < 0.4$) fails UNI EN 13201 and must be scrapped. 
+
+Class 2 (“Acceptable,” $0.4 \leq U_0 < 0.45$) meets the standard but not the company’s internal target. 
+
+Class 3 (“Target,” $0.45 \leq  U_0 \leq 0.5$) is preferred because it satisfies external requirements and delivers the desired uniformity without unnecessary over processing. 
+
+Class 4 ($U_0 > 0.5$) exceeds the minimum requirement but is economically unattractive extra uniformity adds little customer value while consuming more resources.
+
+
+
+Method
+=======================================================================
+
+Column {data-width=500}
+-----------------------------------------------------------------------
+
+This analysis applies multinomial logistic regression to model how process variables influence lens quality, followed by model comparison, goodness-of-fit evaluation, and classification performance assessment.
+
+### Model Structure (Conceptual Understanding)
+
+Because the response variable contains four quality categories, we fit a multinomial logistic regression using **Class 1 (Waste)** as the reference level. This produces three logit equations; one for each comparison of Class 2, Class 3, and Class 4 versus Class 1. Each equation models how the process variables change the log-odds of belonging to a higher-quality or lower-quality class relative to Class 1.
+
+**Class 2 vs Class 1:**
+
+\[
+\begin{aligned}
+\log\left(\frac{P(Y = 2)}{P(Y = 1)}\right)
+&= \beta_{02} 
+  + \beta_{12}\,\text{melt_temp}
+  + \beta_{22}\,\text{mold_temp}
+  + \beta_{32}\,\text{fill_time}  \\
+&\quad + \beta_{42}\,\text{plast_time}
+  + \beta_{52}\,\text{cycle_time}
+  + \beta_{62}\,\text{close_force} \\
+&\quad + \beta_{72}\,\text{clamp_peak}
+  + \beta_{82}\,\text{torque_peak}
+  + \beta_{92}\,\text{torque_mean} \\
+&\quad + \beta_{102}\,\text{back_press}
+  + \beta_{112}\,\text{inj_press}
+  + \beta_{122}\,\text{screw_pos} \\
+&\quad + \beta_{132}\,\text{shot_vol}
+\end{aligned}
+\]
+
+
+ **Class 3 vs Class 1**
+
+\[
+\begin{aligned}
+\log\left(\frac{P(Y = 3)}{P(Y = 1)}\right)
+&= \beta_{03}
+  + \beta_{13}\,\text{melt_temp}
+  + \beta_{23}\,\text{mold_temp}
+  + \beta_{33}\,\text{fill_time} \\
+&\quad + \beta_{43}\,\text{plast_time}
+  + \beta_{53}\,\text{cycle_time}
+  + \beta_{63}\,\text{close_force} \\
+&\quad + \beta_{73}\,\text{clamp_peak}
+  + \beta_{83}\,\text{torque_peak}
+  + \beta_{93}\,\text{torque_mean} \\
+&\quad + \beta_{103}\,\text{back_press}
+  + \beta_{113}\,\text{inj_press}
+  + \beta_{123}\,\text{screw_pos} \\
+&\quad + \beta_{133}\,\text{shot_vol}
+\end{aligned}
+\]
+
+
+**Class 4 vs Class 1**
+
+\[
+\begin{aligned}
+\log\left(\frac{P(Y = 4)}{P(Y = 1)}\right)
+&= \beta_{04}
+  + \beta_{14}\,\text{melt_temp}
+  + \beta_{24}\,\text{mold_temp}
+  + \beta_{34}\,\text{fill_time} \\
+&\quad + \beta_{44}\,\text{plast_time}
+  + \beta_{54}\,\text{cycle_time}
+  + \beta_{64}\,\text{close_force} \\
+&\quad + \beta_{74}\,\text{clamp_peak}
+  + \beta_{84}\,\text{torque_peak}
+  + \beta_{94}\,\text{torque_mean} \\
+&\quad + \beta_{104}\,\text{back_press}
+  + \beta_{114}\,\text{inj_press}
+  + \beta_{124}\,\text{screw_pos} \\
+&\quad + \beta_{134}\,\text{shot_vol}
+\end{aligned}
+\]
+
+
+$e^{\beta_jk}$ is the odds ratio for belonging to class k vs baseline (Class 1) per one-unit increase in predictor $X_j$, holding all other variables constant. 
+
+
+
+Column {.tabset data-width=500}
+-----------------------------------------------------------------------
+
+### Data Prepration {data-height=800}
+
+The data is split into training (1016 samples) and test (435 samples) sets.
+
+In the training set, there are 370 Waste, 406 Acceptable, 310 Target, and 360 Inefficient lenses.
+In the test set, there are 111 Waste, 134 Acceptable, 92 Target, and 98 Inefficient lenses.
+
+The training set is used to teach the model, and the test set is used to check its predictions.
+
+**Distribution of Quality based on Training Data**
+
+```{r}
+set.seed(123)
+
+# Train-test split
+idx <- createDataPartition(df$quality, p = 0.7, list = FALSE)
+train <- df[idx, ]
+test  <- df[-idx, ]
+
+# Ensure quality is factor
+train$quality <- as.factor(train$quality)
+test$quality  <- as.factor(test$quality)
+
+# Set baseline to class "2"
+train$quality <- relevel(train$quality, ref = "1")
+test$quality  <- relevel(test$quality, ref = "1")
+
+kable(table(train$quality),
+             col.names = c("Quality", "Frequency"),
+             align = c("c", "c"))
+
+
+```
+
+\
+\
+
+**Distribution of Quality based on Test Data**
+
+```{r}
+kable(table(test$quality),
+             col.names = c("Quality", "Frequency"),
+             align = c("c", "c"))
+
+```
+
+### Performance Metrics Used
+
+- **Accuracy**: proportion of all predictions the model gets correct across the four quality classes.
+
+- **Sensitivity (Recall)**: ability of the model to correctly identify members of a given class.
+
+- **Specificity**: ability of the model to correctly exclude non-members of a given class. 
+
+These metrics provide complementary perspectives on model performance, capturing both overall accuracy and class-specific prediction reliability.
+
+
+Results
+=======================================================================
+
+Column {.tabset data-width=500}
+-----------------------------------------------------------------------
+
+### Model 1
+
+```{r}
+form_full <- quality ~ melt_temp + mold_temp + fill_time + plast_time +
+  cycle_time + close_force + clamp_peak + torque_peak + torque_mean +
+  back_press + inj_press + screw_pos + shot_vol
+
+mlr_full <- multinom(form_full, data = train, trace = FALSE)
+
+s  <- summary(mlr_full)
+coef_mat <- s$coefficients      # rows: non-baseline classes, cols: intercept + predictors
+se_mat   <- s$standard.errors
+
+# z and p
+z_mat <- coef_mat / se_mat
+p_mat <- 2 * (1 - pnorm(abs(z_mat)))
+
+# Convert to long format table
+coef_df <- as.data.frame(coef_mat)
+coef_df$class <- rownames(coef_mat)
+
+se_df   <- as.data.frame(se_mat)   ; se_df$class   <- rownames(se_mat)
+z_df    <- as.data.frame(z_mat)    ; z_df$class    <- rownames(z_mat)
+p_df    <- as.data.frame(p_mat)    ; p_df$class    <- rownames(p_mat)
+
+full_long <- coef_df |>
+  pivot_longer(-class, names_to = "term", values_to = "estimate") |>
+  left_join(
+    se_df |> pivot_longer(-class, names_to = "term", values_to = "std.error"),
+    by = c("class", "term")
+  ) |>
+  left_join(
+    z_df |> pivot_longer(-class, names_to = "term", values_to = "z.value"),
+    by = c("class", "term")
+  ) |>
+  left_join(
+    p_df |> pivot_longer(-class, names_to = "term", values_to = "p.value"),
+    by = c("class", "term")
+  ) |>
+  arrange(class, term)
+
+# Optional: nicer labels and rounding
+coef_table <- full_long |>
+  mutate(
+    term = dplyr::recode(term,
+                         `(Intercept)` = "Intercept",
+                         melt_temp = "Melt temperature",
+                         mold_temp = "Mold temperature",
+                         fill_time = "Fill time",
+                         plast_time = "Plasticizing time",
+                         cycle_time = "Cycle time",
+                         close_force = "Closing force",
+                         clamp_peak = "Clamping force peak",
+                         torque_peak = "Torque peak",
+                         torque_mean = "Torque mean",
+                         back_press = "Back pressure",
+                         inj_press = "Injection pressure",
+                         screw_pos = "Screw position",
+                         shot_vol = "Shot volume"
+    ),
+    estimate  = round(estimate, 2),
+    std.error = round(std.error, 3),
+    z.value   = round(z.value, 3),
+    p.value   = signif(p.value, 3)
+  )
+
+datatable(coef_table,
+  options = list(pageLength = 14,scrollX =5))
+```
+
+### CM 1
+
+```{r}
+pred_class <- predict(mlr_full, newdata = test)
+pred_prob  <- predict(mlr_full, newdata = test, type = "prob")
+
+cm <- confusionMatrix(
+  data = factor(pred_class, levels = levels(test$quality)),
+  reference = test$quality
+)
+cm
+```
+
+
+### Model 2
+
+
+```{r}
+form_reduced <- quality ~ melt_temp + mold_temp + fill_time + plast_time +
+cycle_time + close_force + clamp_peak +back_press + inj_press + screw_pos + shot_vol
+
+mlr_reduced <- multinom(form_reduced, data = train, trace = FALSE)
+
+s  <- summary(mlr_reduced)
+coef_mat <- s$coefficients      # rows: non-baseline classes, cols: intercept + predictors
+se_mat   <- s$standard.errors
+
+# z and p
+z_mat <- coef_mat / se_mat
+p_mat <- 2 * (1 - pnorm(abs(z_mat)))
+
+# Convert to long format table
+coef_df <- as.data.frame(coef_mat)
+coef_df$class <- rownames(coef_mat)
+
+se_df   <- as.data.frame(se_mat)   ; se_df$class   <- rownames(se_mat)
+z_df    <- as.data.frame(z_mat)    ; z_df$class    <- rownames(z_mat)
+p_df    <- as.data.frame(p_mat)    ; p_df$class    <- rownames(p_mat)
+
+full_long <- coef_df |>
+  pivot_longer(-class, names_to = "term", values_to = "estimate") |>
+  left_join(
+    se_df |> pivot_longer(-class, names_to = "term", values_to = "std.error"),
+    by = c("class", "term")
+  ) |>
+  left_join(
+    z_df |> pivot_longer(-class, names_to = "term", values_to = "z.value"),
+    by = c("class", "term")
+  ) |>
+  left_join(
+    p_df |> pivot_longer(-class, names_to = "term", values_to = "p.value"),
+    by = c("class", "term")
+  ) |>
+  arrange(class, term)
+
+# Optional: nicer labels and rounding
+coef_table <- full_long |>
+  mutate(
+    term = dplyr::recode(term,
+                         `(Intercept)` = "Intercept",
+                         melt_temp = "Melt temperature",
+                         mold_temp = "Mold temperature",
+                         fill_time = "Fill time",
+                         plast_time = "Plasticizing time",
+                         cycle_time = "Cycle time",
+                         close_force = "Closing force",
+                         clamp_peak = "Clamping force peak",
+                         back_press = "Back pressure",
+                         inj_press = "Injection pressure",
+                         screw_pos = "Screw position",
+                         shot_vol = "Shot volume"
+    ),
+    estimate  = round(estimate, 2),
+    std.error = round(std.error, 3),
+    z.value   = round(z.value, 3),
+    p.value   = signif(p.value, 3)
+  )
+
+datatable(coef_table,
+          options = list(pageLength = 12,scrollX =5))
+
+```
+
+### CM 2
+
+```{r}
+
+pred_class <- predict(mlr_reduced, newdata = test)
+pred_prob  <- predict(mlr_reduced, newdata = test, type = "prob")
+
+cm <- confusionMatrix(
+  data = factor(pred_class, levels = levels(test$quality)),
+  reference = test$quality
+)
+cm
+
+```
+
+### Model Comparison & Fit
+
+#### Model Comparison
+
+```{r, results = "asis"}
+
+## --- AIC / BIC table -----------------------------------------
+
+aic_vals <- AIC(mlr_full, mlr_reduced)
+bic_vals <- BIC(mlr_full, mlr_reduced)
+
+aicbic_tab <- data.frame(
+  Model = c("Full model", "Reduced model"),
+  AIC   = aic_vals$AIC,
+  BIC   = bic_vals$BIC
+)
+
+kable(aicbic_tab,
+      caption = "Model comparison using AIC and BIC",
+      digits  = 2)
+
+## --- Likelihood ratio test table (anova) ---------------------
+
+lr <- anova(mlr_full, mlr_reduced, test = "Chisq")
+
+# the 2nd row of 'lr' contains the comparison full vs reduced
+lr_tab <- data.frame(
+  Comparison     = "Full vs. reduced",
+  df             = lr$`   Df`[2],
+  `LR statistic` = lr$`LR stat.`[2],
+  `p-value`      = lr$`Pr(Chi)`[[2]]
+)
+
+kable(lr_tab,
+      caption = "Likelihood ratio test comparing full and reduced models",
+      digits  = 3)
+```
+
+
+- Lower AIC prefers the **full** model; lower BIC prefers the **reduced** model.
+- Likelihood ratio test (p < 0.01) indicates the full model fits significantly better than the reduced model.
+
+
+**Classification Performance**
+- Accuracy improves from 0.827 → 0.836 when using Model 2.
+- Kappa improves from 0.769 → 0.781, showing better agreement beyond chance.
+- Sensitivity, specificity, and balanced accuracy either remain similar or improve slightly across classes.
+- No loss in class-specific performance after removing the non-significant predictors.
+
+The reduced model achieves higher test accuracy and better class-wise performance, while using fewer predictors. Therefore, Model 2 is selected for its stronger predictive performance and parsimony, despite the full model’s slightly better statistical fit.
+
+
+
+#### Goodness of Fit
+
+Here we report the Goodness-of-Fit Metrics for the Selected Model (Model 2)
+
+```{r}
+kable(pR2(mlr_reduced), col.names = c("statistic", "value"))
+```
+
+McFadden $R^2 \approx 0.75$ indicates an excellent model fit. ML and CU pseudo-$R^2$ values also show high explanatory power. These values support using the reduced model as the final model.
+
+
+### Overall Performance
+
+#### ROC Curves
+Below, we see the ROC Curves for each class of Quality.
+
+```{r, fig.align='center'}
+
+# 1. Compute ROC objects for each class (one-vs-all)
+classes <- levels(test$quality)
+
+roc_list <- lapply(classes, function(cl) {
+  roc(
+    response  = as.numeric(test$quality == cl),
+    predictor = pred_prob[, cl],
+    quiet     = TRUE
+  )
+})
+
+names(roc_list) <- classes
+
+# 2. Tidy data frame for ggplot
+roc_df <- purrr::map2_dfr(
+  roc_list, names(roc_list),
+  ~ tibble(
+    class       = .y,
+    specificity = rev(.x$specificities),
+    sensitivity = rev(.x$sensitivities)
+  )
+)
+
+# 3. Faceted ROC plot: one nice panel per class
+ggplot(roc_df, aes(x = 1 - specificity, y = sensitivity)) +
+  geom_line(linewidth = 1) +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed") +
+  facet_wrap(~ class, nrow = 1) +
+  coord_equal() +
+  theme_minimal(base_size = 13) +
+  labs(
+    title = "ROC Curves for Each Quality Class",
+    x = "False Positive Rate (1 - Specificity)",
+    y = "True Positive Rate (Sensitivity)"
+  ) +
+  theme(
+    strip.text   = element_text(face = "bold"),
+    plot.title   = element_text(face = "bold"),
+    legend.position = "none"
+  )
+
+```
+
+
+#### AUC values for each class + macro-average
+
+```{r} 
+auc_vec <- sapply(roc_list, auc)
+
+tibble(
+  Class = names(auc_vec),
+  AUC   = round(as.numeric(auc_vec), 3)
+) |>
+  add_row(
+    Class = "Macro-Avg",
+    AUC   = round(mean(as.numeric(auc_vec)), 3)
+  ) |>
+  kable()
+
+```
+
+Column {data-width=500}
+-----------------------------------------------------------------------
+
+### Discussion
+
+The multinomial logistic regression models provide insight into how different injection-molding process variables relate to lens quality. Model 2 was created by removing variables that were not significant across all classes, resulting in a simpler model that still delivers strong predictive performance.
+
+Across classes, the classification metrics show that both models perform well, with particularly strong sensitivity and specificity for Classes 3 and 4. These classes represent higher processing stability, and the model captures these distinctions reliably. Balanced accuracy values ranging from ~82% to ~97%, along with Kappa values above 0.76, indicate strong agreement beyond chance and consistent model reliability across quality levels.
+
+**How the Results Address the Research Questions**
+
+- Which injection-molding variables differ most across the four quality classes?
+
+  - Boxplots show clear differences across classes for cycle time, fill time, injection pressure, screw position, and shot volume.
+
+  - Class 4 (“Inefficient”) consistently shows higher medians and wider spreads in key variables, indicating unstable filling and excessive material use.
+
+  - Classes 2 and 3 show tighter distributions, suggesting more controlled and stable processes.
+
+- How do process conditions contrast between “Good” lenses (Classes 2–3) and “Bad” lenses (Classes 1 & 4)?
+
+  - Bad lenses (Classes 1 & 4) show patterns of instability: higher fill time, torque variation, screw position, and shot volume.
+
+  - Good lenses (Classes 2–3) exhibit more consistent clamp force and injection pressure, indicating better cavity packing and process control.
+
+  - These contrasts align with the expected quality definitions and support the interpretation of $U_0$-based classes.
+
+- How do the full and reduced multinomial logistic regression models compare?
+
+  - Model 1 (full): Lower AIC and significant likelihood-ratio test → slightly better statistical fit.
+
+  - Model 2 (reduced): Lower BIC, simpler structure, and slightly higher predictive accuracy and Kappa → better balance of generalization and interpretability.
+
+  - Because the reduced model maintains strong predictive metrics while removing unnecessary variables, it provides a practical and efficient model for classification.
+
+
+Overall, the analysis shows that several process variables meaningfully distinguish lens quality classes, and a reduced multinomial model can classify these classes with strong accuracy and balanced performance. The results highlight key operational factors that manufacturers can monitor to reduce process instability and improve product quality.
+
+Conclusion
+=======================================================================
+
+Column {data-width=500}
+-----------------------------------------------------------------------
+
+
+### Limitation
+
+The model’s main limitation is that it relies heavily on the selected variables and their significance levels, which might exclude potentially important predictors if their p-values are borderline or contextually relevant. Additionally, the model assumes independence among predictors and may not capture complex interactions or nonlinear relationships. The performance depends on the quality and representatives of the training data, so results might vary with different data or in real-world settings where unseen patterns emerge. Finally, while the model shows strong accuracy and class-specific metrics, it may classify some borderline or overlapping cases, especially among classes with similar characteristics.
+
+### Conclusion
+In conclusion, despite these limitations, the model achieves high overall accuracy and balanced class performance by carefully selecting variables based on their significance. This enhances prediction reliability while maintaining simplicity. The model serves as an effective tool for multi-class classification, offering valuable insights for decision-making while highlighting the need for ongoing evaluation and possible refinement as new data becomes available.
+
+Column {data-width=500}
+-----------------------------------------------------------------------
+
+### References
+
+1. https://venkat-ramani2695.github.io/Wine_-Quality_-Analysis.github.io/#discussion
+2. Dr. Ying-Ju Tessa Chen ( Multinomial Logistic Regression (MLR): Concepts & Application Notes)
+
+I used AI to polish my writing, code for a better and clear presentation.(ChatGPT, Perplexity, Gemini)
+
+### About the Author
+
+Hi, my name is Saffan Ahmed Khan. I am currently pursuing my Master’s in Mechanical Engineering at the University of Dayton, where I have been steadily shaping my path toward manufacturing, quality, and process improvement. Beyond academics I enjoy working on practical hands-on projects, whether that means experimenting with 3D printing, exploring automation ideas, or using data to understand how and why processes behave the way they do.
+
+In the future I hope to grow into a role where I can help design and improve production systems that are efficient, reliable, and safe, combining technical skills with continuous learning and problem solving. I am especially thankful to Dr. Ying Ju Chen for guidance and support along this journey, and for helping me turn classroom concepts into real engineering growth.
